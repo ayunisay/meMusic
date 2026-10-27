@@ -22,7 +22,8 @@ import {
   Film,
   Music2,
   ListMusic,
-  Sparkles
+  Sparkles,
+  FileText
 } from 'lucide-react';
 
 export default function MediaPlayer() {
@@ -60,7 +61,6 @@ export default function MediaPlayer() {
     setDuration,
     setIsPlaying,
     handleTrackEnded,
-    ensureAudioContext,
     updateCurrentTrackLyrics
   } = usePlayer();
 

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
-import { updateTrackLyrics } from '../db/db';
+import { db, updateTrackLyrics } from '../db/db';
 import { getCuratedLyrics } from '../utils/lyricsParser';
 
 const PlayerContext = createContext(null);
@@ -38,6 +38,7 @@ export function PlayerProvider({ children }) {
   // Web Audio API refs for frequency analyzer
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
+  const sourceNodeRef = useRef(null);
   const trackId = currentTrack?.id;
   const fileBlob = currentTrack?.fileBlob;
 
@@ -109,6 +110,8 @@ export function PlayerProvider({ children }) {
   // (Chromium suspends video decoding pipeline when connected to Web Audio)
   const ensureAudioContext = () => {
     // If current track is video, we DO NOT attach createMediaElementSource
+    // (once attached, the element's audio is re-routed into Web Audio and video
+    // playback can be silenced). Visualizer only applies to pure audio.
     if (!videoRef.current || currentTrack?.mediaType === 'video') return;
 
     try {

@@ -8,10 +8,8 @@ import {
   getCuratedLyrics
 } from '../utils/lyricsParser';
 import {
-  FileText,
   Edit3,
   Check,
-  X,
   Upload,
   Clock,
   Sparkles,
@@ -34,7 +32,8 @@ export default function LyricsViewer({
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(track?.lyrics || '');
-  const [isAutoScrollEnabled, setIsAutoScrollEnabled] = useState(false);
+  // Auto-scroll is ON by default so lyrics follow the video/music out of the box.
+  const [isAutoScrollEnabled, setIsAutoScrollEnabled] = useState(true);
   const [showHelp, setShowHelp] = useState(false);
   const [lyricsOffset, setLyricsOffset] = useState(0);
   const [showOffsetControls, setShowOffsetControls] = useState(false);
@@ -46,10 +45,13 @@ export default function LyricsViewer({
 
   // User manual scroll detection to prevent auto-scroll from fighting / jumping
   const isUserScrollingRef = useRef(false);
+  const programmaticScrollRef = useRef(false);
   const userScrollTimeoutRef = useRef(null);
   const [userInteractedScroll, setUserInteractedScroll] = useState(false);
 
   const handleUserScroll = () => {
+    // Ignore wheel/touch events fired by our own programmatic auto-scroll
+    if (programmaticScrollRef.current) return;
     isUserScrollingRef.current = true;
     setUserInteractedScroll(true);
     if (userScrollTimeoutRef.current) clearTimeout(userScrollTimeoutRef.current);
@@ -61,14 +63,22 @@ export default function LyricsViewer({
 
   const resumeAutoScroll = () => {
     isUserScrollingRef.current = false;
+    programmaticScrollRef.current = false;
     setUserInteractedScroll(false);
     if (userScrollTimeoutRef.current) clearTimeout(userScrollTimeoutRef.current);
     if (activeLineRef.current && containerRef.current) {
       const container = containerRef.current;
       const activeEl = activeLineRef.current;
       const containerHeight = container.clientHeight;
-      const targetScrollTop = activeEl.offsetTop - (containerHeight / 2) + (activeEl.clientHeight / 2);
-      container.scrollTo({ top: Math.max(0, targetScrollTop), behavior: 'smooth' });
+      const containerRect = container.getBoundingClientRect();
+      const elRect = activeEl.getBoundingClientRect();
+      const elTopWithinContainer = (elRect.top - containerRect.top) + container.scrollTop;
+      const targetScrollTop = Math.max(0, elTopWithinContainer - (containerHeight / 2) + (elRect.height / 2));
+      programmaticScrollRef.current = true;
+      container.scrollTo({ top: targetScrollTop, behavior: 'smooth' });
+      userScrollTimeoutRef.current = setTimeout(() => {
+        programmaticScrollRef.current = false;
+      }, 700);
     }
   };
 
@@ -79,6 +89,7 @@ export default function LyricsViewer({
     setLyricsOffset(0);
     setShowOffsetControls(false);
     isUserScrollingRef.current = false;
+    programmaticScrollRef.current = false;
     setUserInteractedScroll(false);
   }, [track?.id, track?.lyrics]);
 
@@ -92,26 +103,35 @@ export default function LyricsViewer({
     if (!isAutoScrollEnabled || !parsed.isSynced || !containerRef.current || isUserScrollingRef.current) return;
 
     const container = containerRef.current;
+    let targetScrollTop = 0;
 
     // If still in instrumental intro, scroll smoothly to the top
     if (activeIndex < 0) {
-      container.scrollTo({
-        top: 0,
-        behavior: 'smooth'
-      });
-      return;
+      targetScrollTop = 0;
+    } else if (activeLineRef.current) {
+      const activeEl = activeLineRef.current;
+      const containerHeight = container.clientHeight;
+      // Compute the line's offset relative to the scroll container in a layout-safe way
+      // (offsetTop can point to a different positioned ancestor and cause misalignment)
+      const containerRect = container.getBoundingClientRect();
+      const elRect = activeEl.getBoundingClientRect();
+      const elTopWithinContainer = (elRect.top - containerRect.top) + container.scrollTop;
+      targetScrollTop = Math.max(0, elTopWithinContainer - (containerHeight / 2) + (elRect.height / 2));
     }
 
-    if (!activeLineRef.current) return;
-    const activeEl = activeLineRef.current;
-    const containerHeight = container.clientHeight;
-    const targetScrollTop = activeEl.offsetTop - (containerHeight / 2) + (activeEl.clientHeight / 2);
-
-    container.scrollTo({
-      top: Math.max(0, targetScrollTop),
-      behavior: 'smooth'
-    });
-  }, [activeIndex, isAutoScrollEnabled, parsed.isSynced]);
+    // Only scroll if we're meaningfully off target (avoids fighting/jitter every tick)
+    if (Math.abs(container.scrollTop - targetScrollTop) > 4) {
+      programmaticScrollRef.current = true;
+      container.scrollTo({
+        top: targetScrollTop,
+        behavior: 'smooth'
+      });
+      if (userScrollTimeoutRef.current) clearTimeout(userScrollTimeoutRef.current);
+      userScrollTimeoutRef.current = setTimeout(() => {
+        programmaticScrollRef.current = false;
+      }, 700);
+    }
+  }, [activeIndex, isAutoScrollEnabled, parsed.isSynced, parsed.rawText, track?.id]);
 
   // Format seconds to mm:ss display
   const formatTimeDisplay = (seconds) => {
@@ -167,30 +187,6 @@ export default function LyricsViewer({
         textareaRef.current.setSelectionRange(start + insert.length, start + insert.length);
       }
     }, 10);
-  };
-
-  // Set a specific lyric line's timestamp to the current playback time
-  const handleSetLineTime = async (lineIdx, e) => {
-    if (e) e.stopPropagation();
-    if (!onUpdateLyrics || !track?.lyrics) return;
-    const currentTag = formatTimeTag(currentTime);
-    const rawLines = track.lyrics.split('\n');
-    let validLineCounter = 0;
-    const timeRegex = /\[\d{1,2}:\d{2}(?:\.\d{1,3})?\]/g;
-
-    const updatedLines = rawLines.map(raw => {
-      if (timeRegex.test(raw)) {
-        if (validLineCounter === lineIdx) {
-          validLineCounter++;
-          const clean = raw.replace(timeRegex, '').trim();
-          return `${currentTag} ${clean}`;
-        }
-        validLineCounter++;
-      }
-      return raw;
-    });
-
-    await onUpdateLyrics(updatedLines.join('\n'));
   };
 
   // Handle clearing lyrics
@@ -390,7 +386,7 @@ export default function LyricsViewer({
                 title="Ratakan waktu baris lirik otomatis sesuai durasi lagu agar langsung berjalan mengikuti musik"
               >
                 <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                <span>⚡ Auto-Sync (Mulai {currentTime > 2 ? formatTimeDisplay(currentTime) : '0:14'})</span>
+                <span>Auto-Sync (Mulai {currentTime > 2 ? formatTimeDisplay(currentTime) : '0:14'})</span>
               </button>
 
               <button
@@ -593,7 +589,7 @@ export default function LyricsViewer({
               title="Otomatis ratakan penanda waktu lirik agar jalan dan menyala mengikuti musik"
             >
               <Play className="w-3.5 h-3.5 fill-current" />
-              <span>⚡ Auto-Sync (Mulai {currentTime > 2 ? formatTimeDisplay(currentTime) : '0:14'})</span>
+              <span>Auto-Sync (Mulai {currentTime > 2 ? formatTimeDisplay(currentTime) : '0:14'})</span>
             </button>
           </div>
 
