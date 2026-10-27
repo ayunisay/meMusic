@@ -36,10 +36,7 @@ export function PlayerProvider({ children }) {
   // Manage Blob URL creation and cleanup when track changes
   useEffect(() => {
     if (!currentTrack || !currentTrack.fileBlob) {
-      if (blobUrl) {
-        URL.revokeObjectURL(blobUrl);
-        setBlobUrl(null);
-      }
+      setBlobUrl(null);
       return;
     }
 
@@ -305,7 +302,7 @@ export function PlayerProvider({ children }) {
           playbackRate: playbackRate,
           position: Math.min(Math.max(0, currentTime), duration)
         });
-      } catch (err) {
+      } catch {
         // Can throw if duration is 0 or position > duration
       }
     }

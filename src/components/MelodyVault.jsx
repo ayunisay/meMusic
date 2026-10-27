@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, addMelodyItem, deleteMelodyItem, updateMelodyItem, addMediaItem } from '../db/db';
+import { db, addMelodyItem, deleteMelodyItem, addMediaItem } from '../db/db';
 import VirtualSynth from './VirtualSynth';
 import {
   Mic,
@@ -9,25 +9,24 @@ import {
   Pause,
   Download,
   Trash2,
-  Tag,
   Music,
-  Plus,
   Clock,
   Sparkles,
-  FileText,
   Radio,
-  Share2
+  Share2,
+  Upload,
+  FileAudio
 } from 'lucide-react';
 
-const SUGGESTED_TAGS = ['#Chord', '#Acoustic', '#Piano', '#Riff', '#Vocal', '#Lofi', '#Pop', '#Intro', '#Drop'];
+const SUGGESTED_TAGS = ['#Chord', '#Acoustic', '#Piano', '#Riff', '#Vocal', '#Lofi', '#Pop', '#Intro', '#Drop', '#Imported'];
 
 export default function MelodyVault() {
   // Recorder states
   const [isRecording, setIsRecording] = useState(false);
-  const [isPaused, setIsPaused] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [recordedBlob, setRecordedBlob] = useState(null);
   const [audioUrl, setAudioUrl] = useState(null);
+  const [recordSource, setRecordSource] = useState('both'); // 'mic' | 'synth' | 'both'
 
   // Form states for new recording
   const [title, setTitle] = useState('');
@@ -43,13 +42,108 @@ export default function MelodyVault() {
   const [playingMelodyId, setPlayingMelodyId] = useState(null);
   const audioPlayerRef = useRef(null);
 
-  // MediaRecorder refs
+  // MediaRecorder & Streams refs
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerIntervalRef = useRef(null);
   const micStreamRef = useRef(null);
+  const synthStreamRef = useRef(null);
+  const synthContextRef = useRef(null);
+  const activeRecordingStreamsRef = useRef([]);
 
-  // Real-time mic level canvas visualizer
+  // Callback from VirtualSynth when internal audio stream is ready
+  const handleSynthStreamReady = (stream, ctx) => {
+    synthStreamRef.current = stream;
+    synthContextRef.current = ctx;
+  };
+
+  // Import file ref & state
+  const fileInputRef = useRef(null);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importStatus, setImportStatus] = useState('');
+
+  // Extract duration from audio file
+  const getAudioFileDuration = (file) => {
+    return new Promise((resolve) => {
+      const url = URL.createObjectURL(file);
+      const audio = document.createElement('audio');
+      audio.preload = 'metadata';
+      audio.src = url;
+
+      audio.onloadedmetadata = () => {
+        URL.revokeObjectURL(url);
+        resolve(audio.duration || 0);
+      };
+
+      audio.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve(0);
+      };
+
+      setTimeout(() => {
+        URL.revokeObjectURL(url);
+        resolve(0);
+      }, 5000);
+    });
+  };
+
+  // Handle importing audio files into Melody Vault
+  const handleFileImportChange = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    setIsImporting(true);
+
+    try {
+      if (files.length === 1) {
+        // Single file: load into Preview & Save Idea box
+        const file = files[0];
+        setImportStatus(`Loading ${file.name}...`);
+        const dur = await getAudioFileDuration(file);
+        const url = URL.createObjectURL(file);
+
+        setRecordedBlob(file);
+        setAudioUrl(url);
+        setRecordingSeconds(Math.round(dur));
+
+        const cleanName = file.name.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ');
+        setTitle(cleanName || 'Imported Idea');
+        setSelectedTags(['#Idea', '#Imported']);
+        setNotesText(`Imported file: ${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`);
+        setImportStatus('');
+      } else {
+        // Multiple files: Batch import directly into Melody Vault database!
+        let successCount = 0;
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          setImportStatus(`Importing (${i + 1}/${files.length}): ${file.name}...`);
+          const dur = await getAudioFileDuration(file);
+          const cleanName = file.name.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ');
+
+          await addMelodyItem({
+            title: cleanName || `Imported #${i + 1}`,
+            tags: ['#Idea', '#Imported'],
+            audioBlob: file,
+            notesText: `Imported from file: ${file.name}`,
+            duration: Math.round(dur)
+          });
+          successCount++;
+        }
+        setImportStatus(`Done! Successfully imported ${successCount} melody files.`);
+        setTimeout(() => setImportStatus(''), 4000);
+      }
+    } catch (err) {
+      console.error('Error importing audio files into Melody Vault:', err);
+      alert('Error importing audio file. Please ensure it is a valid audio format (.mp3, .wav, .m4a, .ogg, etc.).');
+    } finally {
+      setIsImporting(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  // Real-time canvas visualizer
   const micCanvasRef = useRef(null);
   const micAnalyserRef = useRef(null);
   const micAnimFrameRef = useRef(null);
@@ -86,17 +180,57 @@ export default function MelodyVault() {
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
   };
 
-  // Start Live Recording
+  // Start Live Recording (Supports Mic, Digital Synth, or Dual Mix)
   const startRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      micStreamRef.current = stream;
+      let streamToRecord = null;
+      activeRecordingStreamsRef.current = [];
 
-      // Setup audio analyzer for live mic waveform
+      if (recordSource === 'mic') {
+        const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        micStreamRef.current = micStream;
+        activeRecordingStreamsRef.current.push(micStream);
+        streamToRecord = micStream;
+      } else if (recordSource === 'synth') {
+        if (!synthStreamRef.current) {
+          alert('Virtual Synth audio is still initializing. Please tap any note on the keyboard first.');
+          return;
+        }
+        if (synthContextRef.current && synthContextRef.current.state === 'suspended') {
+          await synthContextRef.current.resume();
+        }
+        streamToRecord = synthStreamRef.current;
+      } else {
+        // Dual Mix: Mic + Virtual Synth combined
+        const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        micStreamRef.current = micStream;
+        activeRecordingStreamsRef.current.push(micStream);
+
+        if (synthStreamRef.current) {
+          if (synthContextRef.current && synthContextRef.current.state === 'suspended') {
+            await synthContextRef.current.resume();
+          }
+          const AudioCtx = window.AudioContext || window.webkitAudioContext;
+          const mixCtx = new AudioCtx();
+          const mixDest = mixCtx.createMediaStreamDestination();
+
+          const micSource = mixCtx.createMediaStreamSource(micStream);
+          const synthSource = mixCtx.createMediaStreamSource(synthStreamRef.current);
+
+          micSource.connect(mixDest);
+          synthSource.connect(mixDest);
+
+          streamToRecord = mixDest.stream;
+        } else {
+          streamToRecord = micStream;
+        }
+      }
+
+      // Setup audio analyzer for live waveform (analyzes mic, synth, or combined stream)
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      const ctx = new AudioCtx();
-      const source = ctx.createMediaStreamSource(stream);
-      const analyser = ctx.createAnalyser();
+      const analyzerCtx = new AudioCtx();
+      const source = analyzerCtx.createMediaStreamSource(streamToRecord);
+      const analyser = analyzerCtx.createAnalyser();
       analyser.fftSize = 64;
       source.connect(analyser);
       micAnalyserRef.current = analyser;
@@ -105,7 +239,7 @@ export default function MelodyVault() {
 
       // Setup MediaRecorder
       const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
-      const recorder = new MediaRecorder(stream, { mimeType });
+      const recorder = new MediaRecorder(streamToRecord, { mimeType });
       mediaRecorderRef.current = recorder;
       audioChunksRef.current = [];
 
@@ -121,10 +255,12 @@ export default function MelodyVault() {
         const url = URL.createObjectURL(blob);
         setAudioUrl(url);
 
-        // Stop all mic tracks
-        if (micStreamRef.current) {
-          micStreamRef.current.getTracks().forEach(track => track.stop());
-        }
+        // Stop only physical mic tracks so synth stays active
+        activeRecordingStreamsRef.current.forEach(stream => {
+          stream.getTracks().forEach(track => track.stop());
+        });
+        activeRecordingStreamsRef.current = [];
+
         if (micAnimFrameRef.current) {
           cancelAnimationFrame(micAnimFrameRef.current);
         }
@@ -132,19 +268,18 @@ export default function MelodyVault() {
 
       recorder.start(200); // 200ms slice
       setIsRecording(true);
-      setIsPaused(false);
       setRecordingSeconds(0);
       setRecordedBlob(null);
 
-      // Default title with time
-      setTitle(`Idea #${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
+      const sourcePrefix = recordSource === 'synth' ? 'Synth Idea' : recordSource === 'mic' ? 'Vocal Idea' : 'Dual Mix Idea';
+      setTitle(`${sourcePrefix} #${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
 
       timerIntervalRef.current = setInterval(() => {
         setRecordingSeconds(sec => sec + 1);
       }, 1000);
     } catch (err) {
-      console.error('Error accessing microphone:', err);
-      alert('Could not access microphone. Please grant microphone permissions to record.');
+      console.error('Error starting recording:', err);
+      alert('Could not start recording. Please ensure microphone permissions are granted if using mic mode.');
     }
   };
 
@@ -153,7 +288,6 @@ export default function MelodyVault() {
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
-      setIsPaused(false);
       clearInterval(timerIntervalRef.current);
     }
   };
@@ -300,9 +434,19 @@ export default function MelodyVault() {
   };
 
   return (
-    <div className="w-full max-w-7xl mx-auto px-4 py-6 space-y-8">
+    <div className="w-full px-4 md:px-8 py-6 space-y-8">
       {/* Hidden audio element for melody ideas playback */}
       <audio ref={audioPlayerRef} className="hidden" />
+
+      {/* Hidden file input for importing audio files into Melody Vault */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept="audio/*"
+        onChange={handleFileImportChange}
+        className="hidden"
+      />
 
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-zinc-800">
@@ -319,25 +463,53 @@ export default function MelodyVault() {
 
       {/* Recorder + Synth Studio Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column: Live Audio Recorder (5 cols) */}
-        <div className="lg:col-span-5 bg-gradient-to-b from-zinc-900 to-zinc-950 border border-zinc-800 rounded-3xl p-6 shadow-2xl flex flex-col justify-between">
+        {/* Left Column: Live Audio Recorder (4 cols on xl / desktop) */}
+        <div className="lg:col-span-5 xl:col-span-4 bg-gradient-to-b from-zinc-900 to-zinc-950 border border-zinc-800 rounded-3xl p-6 shadow-2xl flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-indigo-400 flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
-                Live Microphone Recorder
+                Live Studio Recorder
               </span>
               <span className="font-mono text-xs bg-zinc-800/80 px-2.5 py-1 rounded-full text-zinc-400">
                 MediaRecorder API
               </span>
             </div>
 
-            {/* Live Mic Canvas Visualizer */}
+            {/* Input Source Mode Selector */}
+            <div className="mt-3 grid grid-cols-3 gap-1 p-1 bg-zinc-950/80 rounded-xl border border-zinc-800 text-[11px] font-medium">
+              {[
+                { id: 'mic', label: 'Mic Only', desc: 'Vokal / Eksternal' },
+                { id: 'synth', label: 'Synth Only', desc: 'Digital Pure' },
+                { id: 'both', label: 'Dual Mix', desc: 'Mic + Synth' }
+              ].map(({ id, label, desc }) => (
+                <button
+                  key={id}
+                  type="button"
+                  disabled={isRecording}
+                  onClick={() => setRecordSource(id)}
+                  className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg transition ${
+                    recordSource === id
+                      ? 'bg-indigo-600 text-white shadow font-semibold'
+                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/50'
+                  } ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  <span>{label}</span>
+                  <span className="text-[9px] opacity-75">{desc}</span>
+                </button>
+              ))}
+            </div>
+
+            {/* Live Canvas Visualizer */}
             <div className="mt-4 w-full h-16 bg-zinc-950 rounded-xl overflow-hidden border border-zinc-800/80 relative flex items-center justify-center">
               <canvas ref={micCanvasRef} width={360} height={64} className="w-full h-full block" />
               {!isRecording && !recordedBlob && (
-                <span className="absolute text-xs text-zinc-600 font-medium">
-                  Press Record to monitor live microphone
+                <span className="absolute text-xs text-zinc-600 font-medium text-center px-2">
+                  {recordSource === 'synth'
+                    ? 'Press Record to capture clean digital synth'
+                    : recordSource === 'mic'
+                    ? 'Press Record to capture microphone'
+                    : 'Press Record to capture mic + synth together'}
                 </span>
               )}
             </div>
@@ -348,22 +520,37 @@ export default function MelodyVault() {
                 {formatTime(recordingSeconds)}
               </div>
               <p className="text-xs text-zinc-500 mt-1">
-                {isRecording ? '🔴 Recording in progress...' : recordedBlob ? 'Audio captured! Ready to save.' : 'Ready to record voice or instrument'}
+                {isRecording
+                  ? `🔴 Recording [${recordSource === 'synth' ? 'Digital Synth' : recordSource === 'mic' ? 'Microphone' : 'Mic + Synth Mix'}]...`
+                  : recordedBlob
+                  ? 'Audio captured! Ready to save.'
+                  : `Ready to record (${recordSource === 'synth' ? 'Virtual Synth internal audio' : recordSource === 'mic' ? 'Voice or instrument via mic' : 'Mic voice + synth simultaneously'})`}
               </p>
             </div>
           </div>
 
           {/* Record Actions */}
           <div className="space-y-4">
-            <div className="flex items-center justify-center gap-3">
+            <div className="flex flex-wrap items-center justify-center gap-2.5">
               {!isRecording ? (
-                <button
-                  onClick={startRecording}
-                  className="flex items-center gap-2 px-6 py-3.5 rounded-full bg-gradient-to-r from-red-600 to-pink-600 hover:from-red-500 hover:to-pink-500 text-white font-bold text-sm shadow-xl shadow-red-600/30 hover:scale-105 active:scale-95 transition"
-                >
-                  <Mic className="w-5 h-5 animate-pulse" />
-                  <span>Start Recording</span>
-                </button>
+                <>
+                  <button
+                    onClick={startRecording}
+                    className="flex items-center gap-2 px-5 py-3 rounded-full bg-gradient-to-r from-red-600 to-pink-600 hover:from-red-500 hover:to-pink-500 text-white font-bold text-xs md:text-sm shadow-xl shadow-red-600/30 hover:scale-105 active:scale-95 transition"
+                  >
+                    <Mic className="w-4 h-4 md:w-5 md:h-5 animate-pulse" />
+                    <span>Start Recording</span>
+                  </button>
+
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isImporting}
+                    className="flex items-center gap-2 px-4 py-3 rounded-full bg-zinc-800 hover:bg-zinc-700 border border-zinc-750 text-zinc-200 font-semibold text-xs md:text-sm shadow-lg hover:scale-105 active:scale-95 transition"
+                  >
+                    <Upload className="w-4 h-4 text-indigo-400" />
+                    <span>Import Audio</span>
+                  </button>
+                </>
               ) : (
                 <button
                   onClick={stopRecording}
@@ -374,6 +561,14 @@ export default function MelodyVault() {
                 </button>
               )}
             </div>
+
+            {/* Import Status Banner */}
+            {importStatus && (
+              <div className="p-3 rounded-2xl bg-indigo-950/70 border border-indigo-500/40 text-indigo-300 text-xs flex items-center gap-2.5 animate-in fade-in">
+                <FileAudio className="w-4 h-4 text-indigo-400 shrink-0 animate-bounce" />
+                <span className="font-medium">{importStatus}</span>
+              </div>
+            )}
 
             {/* Recorded Audio Review & Save Form */}
             {recordedBlob && (
@@ -449,12 +644,13 @@ export default function MelodyVault() {
           </div>
         </div>
 
-        {/* Right Column: Virtual Synth Piano Pad (7 cols) */}
-        <div className="lg:col-span-7 flex flex-col justify-start space-y-4">
+        {/* Right Column: Virtual Synth Piano Pad (8 cols on desktop) */}
+        <div className="lg:col-span-7 xl:col-span-8 flex flex-col justify-start space-y-4">
           <VirtualSynth
             onInsertNotes={(chordName) => {
               setNotesText(prev => prev ? `${prev} - ${chordName}` : chordName);
             }}
+            onStreamReady={handleSynthStreamReady}
           />
 
           <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-4 text-xs text-zinc-400 space-y-1.5">
@@ -480,7 +676,7 @@ export default function MelodyVault() {
             <p className="text-xs text-zinc-400">Stored safely on device in IndexedDB (`melodyVault` table).</p>
           </div>
 
-          {/* Search bar */}
+          {/* Search bar & Import Melodies Button */}
           <div className="flex items-center gap-2">
             <input
               type="text"
@@ -489,7 +685,33 @@ export default function MelodyVault() {
               onChange={(e) => setSearchQuery(e.target.value)}
               className="px-3.5 py-1.5 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-indigo-500"
             />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 rounded-xl text-xs font-semibold transition shrink-0 shadow-sm"
+              title="Import audio files (.mp3, .wav, .m4a, etc.) into Melody Vault"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              <span>Import</span>
+            </button>
           </div>
+        </div>
+
+        {/* Tag filter chips */}
+        <div className="flex items-center gap-1.5 flex-wrap mb-5">
+          {['all', ...SUGGESTED_TAGS].map((tag) => (
+            <button
+              key={tag}
+              type="button"
+              onClick={() => setActiveTagFilter(tag)}
+              className={`text-[11px] px-2.5 py-1 rounded-full border transition ${
+                activeTagFilter === tag
+                  ? 'bg-indigo-600 text-white border-indigo-500 font-medium shadow-sm'
+                  : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200 hover:border-zinc-700'
+              }`}
+            >
+              {tag === 'all' ? 'All Tags' : tag}
+            </button>
+          ))}
         </div>
 
         {/* Melodies Grid */}
@@ -498,7 +720,7 @@ export default function MelodyVault() {
             No melody ideas recorded yet. Hit <strong>Start Recording</strong> above to capture your first idea!
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
             {melodies.map((item) => {
               const isPlayingThis = playingMelodyId === item.id;
 

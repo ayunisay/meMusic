@@ -23,7 +23,7 @@ export default function App() {
         <Navbar />
 
         {/* Main Content Layout with Sidebar on Desktop */}
-        <div className="flex-1 flex flex-col md:flex-row w-full max-w-7xl mx-auto min-h-0">
+        <div className="flex-1 flex flex-col md:flex-row w-full min-h-0">
           {/* Sidebar Navigation (Desktop) */}
           <Navigation activeTab={activeTab} setActiveTab={setActiveTab} />
 

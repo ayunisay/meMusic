@@ -5,9 +5,9 @@ import {
   Wifi,
   WifiOff,
   HardDrive,
-  ShieldCheck,
   Smartphone,
-  Info
+  Laptop,
+  X
 } from 'lucide-react';
 
 export default function Navbar() {
@@ -62,6 +62,8 @@ export default function Navbar() {
     };
   }, []);
 
+  const [showDesktopGuide, setShowDesktopGuide] = useState(false);
+
   const handleInstallClick = async () => {
     // Detect iOS
     const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
@@ -77,14 +79,14 @@ export default function Navbar() {
     } else if (isIos) {
       setShowIosGuide(true);
     } else {
-      alert('TuneVault is ready to install! Look for the install icon in your browser address bar.');
+      setShowDesktopGuide(true);
     }
   };
 
   return (
     <>
-      <header className="sticky top-0 z-30 w-full bg-zinc-950/80 backdrop-blur-xl border-b border-zinc-800/80 px-4 py-3">
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
+      <header className="sticky top-0 z-30 w-full bg-zinc-950/80 backdrop-blur-xl border-b border-zinc-800/80 px-2 md:px-4 py-3">
+        <div className="w-full px-2 md:px-4 flex items-center justify-between gap-4">
           {/* Logo & Brand */}
           <div className="flex items-center gap-3">
             <div className="relative w-9 h-9 rounded-xl overflow-hidden shadow-lg shadow-indigo-600/30 flex items-center justify-center border border-indigo-500/40">
@@ -129,21 +131,16 @@ export default function Navbar() {
               <span className="hidden sm:inline">{isOnline ? 'Offline Ready' : 'Offline Mode'}</span>
             </div>
 
-            {/* Install PWA Button */}
-            {!isInstalled ? (
+            {/* Install PWA Button - Only show if browser natively supports 1-click prompt */}
+            {isInstallable && !isInstalled && (
               <button
                 onClick={handleInstallClick}
                 className="flex items-center gap-1.5 px-3 sm:px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-semibold text-xs shadow-md shadow-indigo-600/20 transition active:scale-95"
-                title="Install TuneVault to your home screen or desktop"
+                title="Install TuneVault ke desktop"
               >
                 <DownloadCloud className="w-3.5 h-3.5" />
                 <span>Install App</span>
               </button>
-            ) : (
-              <div className="hidden sm:flex items-center gap-1 text-xs text-zinc-400 bg-zinc-900 border border-zinc-800 px-2.5 py-1 rounded-xl">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                <span>App Installed</span>
-              </div>
             )}
           </div>
         </div>
@@ -169,6 +166,64 @@ export default function Navbar() {
               className="w-full py-2 bg-indigo-600 text-white text-xs font-bold rounded-xl"
             >
               Got it
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Desktop (Chrome / Edge) Install Guide Modal */}
+      {showDesktopGuide && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl relative">
+            <button
+              onClick={() => setShowDesktopGuide(false)}
+              className="absolute top-4 right-4 p-1.5 rounded-full text-zinc-400 hover:text-white hover:bg-zinc-800 transition"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-xl bg-indigo-600/20 text-indigo-400 border border-indigo-500/30">
+                <Laptop className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Install TuneVault ke Laptop</h3>
+                <p className="text-xs text-zinc-400">Jalankan offline sebagai aplikasi desktop mandiri</p>
+              </div>
+            </div>
+
+            <div className="space-y-2.5 text-xs text-zinc-300 bg-zinc-950 p-3.5 rounded-2xl border border-zinc-800/80">
+              <p className="text-zinc-400">
+                Browser Anda (Edge/Chrome) sudah menyiapkan tombol install langsung di browser bar:
+              </p>
+              <div className="flex items-start gap-2.5 pt-1">
+                <span className="flex-shrink-0 w-5 h-5 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold text-[11px]">1</span>
+                <div>
+                  Lihat ke <strong>Address Bar</strong> (kolom URL paling atas, sebelah icon bintang ⭐).
+                </div>
+              </div>
+              <div className="flex items-start gap-2.5">
+                <span className="flex-shrink-0 w-5 h-5 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold text-[11px]">2</span>
+                <div>
+                  Klik icon <strong>Install App</strong> (gambar monitor dengan panah ke bawah atau icon komputer).
+                </div>
+              </div>
+              <div className="flex items-start gap-2.5">
+                <span className="flex-shrink-0 w-5 h-5 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold text-[11px]">3</span>
+                <div>
+                  Atau klik menu titik tiga <strong>( ⋮ )</strong> di browser &gt; pilih <strong>Apps</strong> &gt; <strong>Install TuneVault</strong>.
+                </div>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-zinc-500 leading-relaxed">
+              *Setelah di-install, aplikasi akan ada di Start Menu & Desktop Anda dan bisa dibuka full offline tanpa membuka browser lagi.
+            </p>
+
+            <button
+              onClick={() => setShowDesktopGuide(false)}
+              className="w-full py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-indigo-600/20 transition active:scale-95"
+            >
+              Oke, Saya Mengerti
             </button>
           </div>
         </div>

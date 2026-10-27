@@ -38,6 +38,7 @@ export default function MediaPlayer() {
     blobUrl,
     videoRef,
     // Actions
+    playTrack,
     togglePlay,
     nextTrack,
     previousTrack,
@@ -245,7 +246,7 @@ export default function MediaPlayer() {
                       key={t.id || idx}
                       onClick={() => {
                         seekTo(0);
-                        usePlayer().playTrack(t);
+                        playTrack(t);
                       }}
                       className={`flex items-center justify-between p-2.5 rounded-xl cursor-pointer transition ${
                         t.id === currentTrack.id ? 'bg-indigo-600/20 border border-indigo-500/40 text-indigo-300' : 'hover:bg-zinc-800/50 text-zinc-400'
@@ -440,7 +441,7 @@ export default function MediaPlayer() {
             />
           </div>
 
-          <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
+          <div className="w-full px-2 md:px-6 flex items-center justify-between gap-3">
             {/* Left: Thumbnail & Info (Clickable to Expand) */}
             <div
               onClick={() => setIsExpanded(true)}
