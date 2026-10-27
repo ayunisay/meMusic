@@ -1,6 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, addMelodyItem, deleteMelodyItem, addMediaItem } from '../db/db';
+import {
+  extractAndCompressAudio,
+  isCompressibleAudio,
+  formatBytes,
+  AUDIO_ONLY_ACCEPT_ATTRIBUTE,
+  validateMediaFile
+} from '../utils/mediaOptimizer';
 import VirtualSynth from './VirtualSynth';
 import {
   Mic,
@@ -89,16 +96,62 @@ export default function MelodyVault() {
 
   // Handle importing audio files into Melody Vault
   const handleFileImportChange = async (e) => {
-    const files = Array.from(e.target.files || []);
-    if (files.length === 0) return;
+    const rawFiles = Array.from(e.target.files || []);
+    if (rawFiles.length === 0) return;
+
+    // Filter strictly for audio files only (Melody Vault is for audio / recordings)
+    const validFiles = [];
+    const invalidFiles = [];
+
+    for (const f of rawFiles) {
+      const res = validateMediaFile(f);
+      if (res.isAudio) {
+        validFiles.push(f);
+      } else {
+        invalidFiles.push(f);
+      }
+    }
+
+    if (invalidFiles.length > 0) {
+      const invalidNames = invalidFiles.map(f => f.name).slice(0, 3).join(', ');
+      const extraCount = invalidFiles.length > 3 ? ` dan ${invalidFiles.length - 3} file lainnya` : '';
+
+      if (validFiles.length === 0) {
+        alert(
+          `Format file tidak didukung!\n\nMelody Vault hanya menerima file Lagu/Rekaman Audio (.mp3, .wav, .m4a, .flac, .ogg, .aac).\n\nFile ditolak:\n${invalidNames}${extraCount}`
+        );
+        if (fileInputRef.current) fileInputRef.current.value = '';
+        return;
+      } else {
+        alert(
+          `Perhatian: ${invalidFiles.length} file diabaikan (${invalidNames}${extraCount}) karena bukan format audio/lagu. Hanya file lagu yang di-import.`
+        );
+      }
+    }
 
     setIsImporting(true);
+    const files = validFiles;
 
     try {
       if (files.length === 1) {
         // Single file: load into Preview & Save Idea box
-        const file = files[0];
-        setImportStatus(`Loading ${file.name}...`);
+        let file = files[0];
+        const originalSize = file.size;
+        let wasCompressed = false;
+
+        if (isCompressibleAudio(file)) {
+          setImportStatus(`Mengoptimalkan & kompresi ${file.name}...`);
+          try {
+            const res = await extractAndCompressAudio(file);
+            file = res.blob;
+            wasCompressed = true;
+          } catch (e) {
+            console.warn('Compression fallback:', e);
+          }
+        } else {
+          setImportStatus(`Memuat ${file.name}...`);
+        }
+
         const dur = await getAudioFileDuration(file);
         const url = URL.createObjectURL(file);
 
@@ -106,31 +159,50 @@ export default function MelodyVault() {
         setAudioUrl(url);
         setRecordingSeconds(Math.round(dur));
 
-        const cleanName = file.name.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ');
+        const cleanName = files[0].name.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ');
         setTitle(cleanName || 'Imported Idea');
         setSelectedTags(['#Idea', '#Imported']);
-        setNotesText(`Imported file: ${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`);
+        if (wasCompressed) {
+          const savingsPct = Math.round(((originalSize - file.size) / originalSize) * 100);
+          setNotesText(`Dioptimalkan: ${files[0].name} (Hemat ${savingsPct}% memori: ${formatBytes(originalSize)} → ${formatBytes(file.size)})`);
+        } else {
+          setNotesText(`Imported file: ${files[0].name} (${formatBytes(file.size)})`);
+        }
         setImportStatus('');
       } else {
         // Multiple files: Batch import directly into Melody Vault database!
         let successCount = 0;
+        let totalSaved = 0;
         for (let i = 0; i < files.length; i++) {
-          const file = files[i];
-          setImportStatus(`Importing (${i + 1}/${files.length}): ${file.name}...`);
+          let file = files[i];
+          const originalSize = file.size;
+          setImportStatus(`Mengimpor (${i + 1}/${files.length}): ${file.name}...`);
+
+          if (isCompressibleAudio(file)) {
+            try {
+              const res = await extractAndCompressAudio(file);
+              file = res.blob;
+              totalSaved += (originalSize - file.size);
+            } catch (e) {
+              console.warn('Batch compression fallback:', e);
+            }
+          }
+
           const dur = await getAudioFileDuration(file);
-          const cleanName = file.name.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ');
+          const cleanName = files[i].name.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ');
 
           await addMelodyItem({
             title: cleanName || `Imported #${i + 1}`,
             tags: ['#Idea', '#Imported'],
             audioBlob: file,
-            notesText: `Imported from file: ${file.name}`,
+            notesText: `Imported from: ${files[i].name} (${formatBytes(file.size)})`,
             duration: Math.round(dur)
           });
           successCount++;
         }
-        setImportStatus(`Done! Successfully imported ${successCount} melody files.`);
-        setTimeout(() => setImportStatus(''), 4000);
+        const savedMsg = totalSaved > 0 ? ` (Menghemat ${formatBytes(totalSaved)} memori!)` : '';
+        setImportStatus(`Selesai! Berhasil mengimpor ${successCount} file melodi${savedMsg}`);
+        setTimeout(() => setImportStatus(''), 4500);
       }
     } catch (err) {
       console.error('Error importing audio files into Melody Vault:', err);
@@ -443,7 +515,7 @@ export default function MelodyVault() {
         ref={fileInputRef}
         type="file"
         multiple
-        accept="audio/*"
+        accept={AUDIO_ONLY_ACCEPT_ATTRIBUTE}
         onChange={handleFileImportChange}
         className="hidden"
       />

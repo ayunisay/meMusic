@@ -56,6 +56,21 @@
   background: #3f3f46;
 }
 
+/* YouTube Music Style Lyrics Scrollbar */
+.custom-lyrics-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.custom-lyrics-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-lyrics-scrollbar::-webkit-scrollbar-thumb {
+  background: #52525b;
+  border-radius: 9999px;
+}
+.custom-lyrics-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #71717a;
+}
+
 /* Custom Range Input */
 input[type="range"] {
   accent-color: #6366f1;

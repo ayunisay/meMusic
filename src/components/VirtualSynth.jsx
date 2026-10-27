@@ -350,8 +350,13 @@ export default function VirtualSynth({ onInsertNotes, onStreamReady }) {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
       const key = e.key.toUpperCase();
       const noteItem = currentNotes.find(n => n.key && n.key.toUpperCase() === key);
-      if (noteItem && !activeNotes.has(noteItem.id)) {
-        playFreq(noteItem.freq, noteItem.id);
+      if (noteItem) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        if (!activeNotes.has(noteItem.id)) {
+          playFreq(noteItem.freq, noteItem.id);
+        }
       }
     };
 
@@ -360,21 +365,24 @@ export default function VirtualSynth({ onInsertNotes, onStreamReady }) {
       const key = e.key.toUpperCase();
       const noteItem = currentNotes.find(n => n.key && n.key.toUpperCase() === key);
       if (noteItem) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
         stopFreq(noteItem.id);
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('keydown', handleKeyDown, { capture: true });
+    window.addEventListener('keyup', handleKeyUp, { capture: true });
 
     return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('keydown', handleKeyDown, { capture: true });
+      window.removeEventListener('keyup', handleKeyUp, { capture: true });
     };
   }, [octaveOffset, instrument, activeNotes, currentNotes]);
 
   return (
-    <div className="w-full bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl">
+    <div data-virtual-synth="true" className="w-full bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl">
       {/* Synth Controls Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4 pb-3 border-b border-zinc-800">
         <div className="flex items-center gap-2">

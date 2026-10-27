@@ -1,4 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import { updateTrackLyrics } from '../db/db';
+import { getCuratedLyrics } from '../utils/lyricsParser';
 
 const PlayerContext = createContext(null);
 
@@ -9,8 +11,13 @@ export function PlayerProvider({ children }) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [volume, setVolume] = useState(1);
-  const [isMuted, setIsMuted] = useState(false);
+  const [volume, setVolume] = useState(() => {
+    const saved = localStorage.getItem('meMusic_volume');
+    return saved !== null ? parseFloat(saved) : 0.85;
+  });
+  const [isMuted, setIsMuted] = useState(() => {
+    return localStorage.getItem('meMusic_muted') === 'true';
+  });
   const [playbackRate, setPlaybackRate] = useState(1);
   const [repeatMode, setRepeatMode] = useState('none'); // 'none' | 'one' | 'all'
   const [isShuffle, setIsShuffle] = useState(false);
@@ -31,21 +38,22 @@ export function PlayerProvider({ children }) {
   // Web Audio API refs for frequency analyzer
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
-  const sourceNodeRef = useRef(null);
+  const trackId = currentTrack?.id;
+  const fileBlob = currentTrack?.fileBlob;
 
-  // Manage Blob URL creation and cleanup when track changes
+  // Manage Blob URL creation and cleanup - ONLY recreate when track ID actually changes!
   useEffect(() => {
-    if (!currentTrack || !currentTrack.fileBlob) {
+    if (!fileBlob) {
       setBlobUrl(null);
       return;
     }
 
-    const url = URL.createObjectURL(currentTrack.fileBlob);
+    const url = URL.createObjectURL(fileBlob);
     setBlobUrl(url);
 
     // Auto default: If it's pure audio, default to Audio Saja mode.
     // If it's video, default to Video mode unless user specifically toggled.
-    if (currentTrack.mediaType === 'audio') {
+    if (currentTrack?.mediaType === 'audio') {
       setIsAudioOnly(true);
     } else {
       setIsAudioOnly(false);
@@ -54,35 +62,85 @@ export function PlayerProvider({ children }) {
     return () => {
       URL.revokeObjectURL(url);
     };
-  }, [currentTrack]);
+  }, [trackId]);
 
-  // Connect Web Audio API to the video element safely
+  // Helper to determine if current lyrics are un-synced, dummy, or outdated
+  const shouldApplyCuratedLyrics = (trackTitle, currentLyrics, curated) => {
+    if (!curated) return false;
+    if (!currentLyrics || currentLyrics.trim() === '') return true;
+    // If lyrics contain old dummy text
+    if (currentLyrics.includes('We were young, we were wild and free')) return true;
+    // For Obsessed with Youth (10_1vuZAeP0)
+    if (
+      (trackTitle?.toLowerCase().includes('youth') || trackTitle?.toLowerCase().includes('1vu') || trackTitle?.includes('엑스디') || trackTitle?.includes('어린')) &&
+      !currentLyrics.includes('\n\n[00:44.80]')
+    ) {
+      return true;
+    }
+    // For u and me in arguments
+    if (trackTitle?.toLowerCase().includes('argument') && !currentLyrics.includes('psycho drama')) {
+      return true;
+    }
+    return false;
+  };
+
+  // Auto-apply verified curated lyrics to active track if un-synced or outdated
+  useEffect(() => {
+    if (!currentTrack || !currentTrack.id) return;
+    const curated = getCuratedLyrics(currentTrack.title || '');
+    if (shouldApplyCuratedLyrics(currentTrack.title, currentTrack.lyrics, curated)) {
+      updateTrackLyrics(currentTrack.id, curated).then(() => {
+        setCurrentTrack(prev => prev ? { ...prev, lyrics: curated } : null);
+        setPlaylist(prev => prev.map(t => t.id === currentTrack.id ? { ...t, lyrics: curated } : t));
+      }).catch(console.warn);
+    }
+  }, [trackId, currentTrack?.lyrics]);
+
+  // Ensure video element volume/mute/speed stays perfectly synced
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.volume = isMuted ? 0 : volume;
+      videoRef.current.muted = isMuted;
+      videoRef.current.playbackRate = playbackRate;
+    }
+  }, [blobUrl, volume, isMuted, playbackRate]);
+
+  // Connect Web Audio API ONLY for audio visualizer, NEVER for video files
+  // (Chromium suspends video decoding pipeline when connected to Web Audio)
   const ensureAudioContext = () => {
-    if (!audioContextRef.current && videoRef.current) {
-      try {
+    // If current track is video, we DO NOT attach createMediaElementSource
+    if (!videoRef.current || currentTrack?.mediaType === 'video') return;
+
+    try {
+      if (!audioContextRef.current) {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+
         const ctx = new AudioCtx();
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 128;
         analyser.smoothingTimeConstant = 0.8;
 
-        // Source node can only be created once per element
-        if (!sourceNodeRef.current) {
-          const source = ctx.createMediaElementSource(videoRef.current);
-          source.connect(analyser);
-          analyser.connect(ctx.destination);
-          sourceNodeRef.current = source;
+        if (!sourceNodeRef.current && videoRef.current) {
+          try {
+            const source = ctx.createMediaElementSource(videoRef.current);
+            source.connect(analyser);
+            analyser.connect(ctx.destination);
+            sourceNodeRef.current = source;
+          } catch (sourceErr) {
+            console.warn('createMediaElementSource notice:', sourceErr);
+          }
         }
 
         audioContextRef.current = ctx;
         analyserRef.current = analyser;
-      } catch (err) {
-        console.warn('Web Audio API context init:', err);
       }
-    }
 
-    if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
-      audioContextRef.current.resume();
+      if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
+        audioContextRef.current.resume().catch(() => {});
+      }
+    } catch (err) {
+      console.warn('Web Audio API context init:', err);
     }
   };
 
@@ -91,19 +149,44 @@ export function PlayerProvider({ children }) {
     if (newPlaylist) {
       setPlaylist(newPlaylist);
     }
+
+    // Auto-match 100% verified LRC lyrics for known songs
+    const curated = getCuratedLyrics(track?.title || '');
+    if (shouldApplyCuratedLyrics(track?.title, track?.lyrics, curated)) {
+      track = { ...track, lyrics: curated };
+      updateTrackLyrics(track.id, curated).catch(console.warn);
+      if (newPlaylist) {
+        setPlaylist(newPlaylist.map(t => t.id === track.id ? { ...t, lyrics: curated } : t));
+      } else {
+        setPlaylist(prev => prev.map(t => t.id === track.id ? { ...t, lyrics: curated } : t));
+      }
+    }
+
     setCurrentTrack(track);
+    if (track && track.duration && track.duration > 0) {
+      setDuration(track.duration);
+    }
     setIsPlaying(true);
+
+    // If playing video, immediately expand player to show the video canvas
+    if (track.mediaType === 'video') {
+      setIsAudioOnly(false);
+      setIsExpanded(true);
+    }
 
     ensureAudioContext();
 
     // Small delay for DOM to load source if needed
     setTimeout(() => {
       if (videoRef.current) {
+        videoRef.current.volume = isMuted ? 0 : volume;
+        videoRef.current.muted = isMuted;
+        videoRef.current.playbackRate = playbackRate;
         videoRef.current.play().catch(err => {
           console.warn('Playback play request interrupted:', err);
         });
       }
-    }, 50);
+    }, 60);
   };
 
   // Toggle Play / Pause
@@ -124,79 +207,139 @@ export function PlayerProvider({ children }) {
   };
 
   // Skip Next
-  const nextTrack = () => {
-    if (playlist.length === 0) return;
-    const currentIndex = playlist.findIndex(t => t.id === currentTrack?.id);
+  const nextTrack = async () => {
+    let currentPlaylist = playlist;
+    if (!currentPlaylist || currentPlaylist.length === 0) {
+      try {
+        currentPlaylist = await db.mediaLibrary.toArray();
+        setPlaylist(currentPlaylist);
+      } catch (e) {
+        currentPlaylist = [];
+      }
+    }
+    if (!currentPlaylist || currentPlaylist.length === 0) return;
+
+    const currentIndex = currentPlaylist.findIndex(t => t.id === currentTrack?.id);
 
     if (isShuffle) {
-      const randomIndex = Math.floor(Math.random() * playlist.length);
-      playTrack(playlist[randomIndex]);
+      const remaining = currentPlaylist.filter((_, idx) => idx !== currentIndex);
+      const randomTrack = remaining.length > 0 ? remaining[Math.floor(Math.random() * remaining.length)] : currentPlaylist[0];
+      playTrack(randomTrack);
       return;
     }
 
-    if (currentIndex < playlist.length - 1) {
-      playTrack(playlist[currentIndex + 1]);
-    } else if (repeatMode === 'all') {
-      playTrack(playlist[0]);
+    if (currentIndex >= 0 && currentIndex < currentPlaylist.length - 1) {
+      playTrack(currentPlaylist[currentIndex + 1]);
+    } else {
+      playTrack(currentPlaylist[0]);
     }
   };
 
   // Skip Previous
-  const previousTrack = () => {
-    if (!videoRef.current) return;
-    // If more than 3 seconds in, restart track
-    if (videoRef.current.currentTime > 3) {
+  const previousTrack = async () => {
+    let currentPlaylist = playlist;
+    if (!currentPlaylist || currentPlaylist.length === 0) {
+      try {
+        currentPlaylist = await db.mediaLibrary.toArray();
+        setPlaylist(currentPlaylist);
+      } catch (e) {
+        currentPlaylist = [];
+      }
+    }
+    if (!currentPlaylist || currentPlaylist.length === 0) return;
+
+    // If more than 3 seconds in, restart track to 0
+    if (videoRef.current && videoRef.current.currentTime > 3) {
       videoRef.current.currentTime = 0;
       setCurrentTime(0);
       return;
     }
 
-    if (playlist.length === 0) return;
-    const currentIndex = playlist.findIndex(t => t.id === currentTrack?.id);
+    const currentIndex = currentPlaylist.findIndex(t => t.id === currentTrack?.id);
 
     if (currentIndex > 0) {
-      playTrack(playlist[currentIndex - 1]);
-    } else if (repeatMode === 'all') {
-      playTrack(playlist[playlist.length - 1]);
+      playTrack(currentPlaylist[currentIndex - 1]);
     } else {
-      videoRef.current.currentTime = 0;
+      playTrack(currentPlaylist[currentPlaylist.length - 1]);
     }
   };
 
   // Seek to specific second
   const seekTo = (seconds) => {
     if (videoRef.current) {
-      videoRef.current.currentTime = seconds;
-      setCurrentTime(seconds);
+      const maxDur = duration || (currentTrack?.duration) || videoRef.current.duration || 999999;
+      const target = Math.max(0, Math.min(maxDur, Number(seconds) || 0));
+      try {
+        videoRef.current.currentTime = target;
+        setCurrentTime(target);
+      } catch (err) {
+        console.warn('seekTo error:', err);
+      }
     }
   };
 
-  // Step backward / forward by 10s
+  // Step backward / forward by offset seconds
   const seekRelative = (offsetSeconds) => {
     if (videoRef.current) {
-      const newTime = Math.max(0, Math.min(videoRef.current.duration || 0, videoRef.current.currentTime + offsetSeconds));
-      videoRef.current.currentTime = newTime;
-      setCurrentTime(newTime);
+      const maxDur = duration || (currentTrack?.duration) || videoRef.current.duration || 999999;
+      const cur = videoRef.current.currentTime || currentTime || 0;
+      const target = Math.max(0, Math.min(maxDur, cur + offsetSeconds));
+      try {
+        videoRef.current.currentTime = target;
+        setCurrentTime(target);
+      } catch (err) {
+        console.warn('seekRelative error:', err);
+      }
     }
   };
 
-  // Toggle Volume & Mute
+  // Toggle Volume & Mute with localStorage persistence
   const handleVolumeChange = (newVol) => {
-    setVolume(newVol);
+    const clamped = Math.max(0, Math.min(1, Number(newVol) || 0));
+    setVolume(clamped);
+    try {
+      localStorage.setItem('meMusic_volume', clamped.toString());
+    } catch (e) {
+      // ignore
+    }
+
     if (videoRef.current) {
-      videoRef.current.volume = newVol;
-      if (newVol > 0 && isMuted) {
+      videoRef.current.volume = clamped;
+      if (clamped > 0 && isMuted) {
         setIsMuted(false);
         videoRef.current.muted = false;
+        try {
+          localStorage.setItem('meMusic_muted', 'false');
+        } catch (e) {
+          // ignore
+        }
       }
     }
   };
 
   const toggleMute = () => {
+    const targetMuted = !isMuted;
+    setIsMuted(targetMuted);
+    try {
+      localStorage.setItem('meMusic_muted', targetMuted.toString());
+    } catch (e) {
+      // ignore
+    }
+
     if (videoRef.current) {
-      const targetMuted = !isMuted;
-      setIsMuted(targetMuted);
       videoRef.current.muted = targetMuted;
+    }
+  };
+
+  // Update lyrics for the active track
+  const updateCurrentTrackLyrics = async (newLyrics) => {
+    if (!currentTrack || !currentTrack.id) return;
+    try {
+      await updateTrackLyrics(currentTrack.id, newLyrics);
+      setCurrentTrack(prev => prev ? { ...prev, lyrics: newLyrics } : null);
+      setPlaylist(prev => prev.map(t => t.id === currentTrack.id ? { ...t, lyrics: newLyrics } : t));
+    } catch (err) {
+      console.error('Failed to update track lyrics:', err);
     }
   };
 
@@ -363,7 +506,8 @@ export function PlayerProvider({ children }) {
         setDuration,
         setIsPlaying,
         handleTrackEnded,
-        ensureAudioContext
+        ensureAudioContext,
+        updateCurrentTrackLyrics
       }}
     >
       {children}

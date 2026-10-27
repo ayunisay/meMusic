@@ -11,13 +11,33 @@ db.version(1).stores({
 /**
  * Add a new media item (audio or video) to IndexedDB
  */
-export async function addMediaItem({ title, artist = 'Unknown Artist', mediaType, fileBlob, duration = 0 }) {
+export async function addMediaItem({
+  title,
+  artist = 'Unknown Artist',
+  mediaType,
+  fileBlob,
+  duration = 0,
+  originalSize = null,
+  fileSize = null,
+  isOptimized = false,
+  savingsPercent = 0,
+  convertedFromVideo = false,
+  lyrics = ''
+}) {
+  const actualSize = fileSize || (fileBlob ? fileBlob.size : 0);
+  const initialSize = originalSize || actualSize;
   const item = {
     title: title || 'Untitled Track',
     artist: artist || 'Unknown Artist',
-    mediaType: mediaType || 'audio',
+    mediaType: mediaType === 'video' ? 'video' : 'audio',
     fileBlob,
     duration: Number(duration) || 0,
+    originalSize: initialSize,
+    fileSize: actualSize,
+    isOptimized: Boolean(isOptimized),
+    savingsPercent: Number(savingsPercent) || 0,
+    convertedFromVideo: Boolean(convertedFromVideo),
+    lyrics: lyrics || '',
     createdAt: new Date().toISOString()
   };
   const id = await db.mediaLibrary.add(item);
@@ -36,6 +56,13 @@ export async function deleteMediaItem(id) {
  */
 export async function updateMediaItem(id, updates) {
   return await db.mediaLibrary.update(id, updates);
+}
+
+/**
+ * Update lyrics for a track
+ */
+export async function updateTrackLyrics(id, lyrics) {
+  return await db.mediaLibrary.update(id, { lyrics: lyrics || '' });
 }
 
 /**
@@ -83,6 +110,80 @@ export async function getStorageEstimate() {
     };
   }
   return null;
+}
+
+/**
+ * Get comprehensive storage breakdown across media types and savings
+ */
+export async function getStorageBreakdown() {
+  try {
+    const mediaItems = await db.mediaLibrary.toArray();
+    const melodyItems = await db.melodyVault.toArray();
+
+    let audioBytes = 0;
+    let videoBytes = 0;
+    let melodyBytes = 0;
+    let totalSavedBytes = 0;
+    let optimizedCount = 0;
+
+    for (const item of mediaItems) {
+      const size = item.fileSize || (item.fileBlob ? item.fileBlob.size : 0);
+      if (item.mediaType === 'video') {
+        videoBytes += size;
+      } else {
+        audioBytes += size;
+      }
+      if (item.isOptimized && item.originalSize && item.originalSize > size) {
+        totalSavedBytes += (item.originalSize - size);
+        optimizedCount++;
+      }
+    }
+
+    for (const item of melodyItems) {
+      const size = item.audioBlob ? item.audioBlob.size : 0;
+      melodyBytes += size;
+    }
+
+    const totalBytes = audioBytes + videoBytes + melodyBytes;
+
+    return {
+      totalBytes,
+      totalMB: (totalBytes / (1024 * 1024)).toFixed(1),
+      audioBytes,
+      audioMB: (audioBytes / (1024 * 1024)).toFixed(1),
+      videoBytes,
+      videoMB: (videoBytes / (1024 * 1024)).toFixed(1),
+      melodyBytes,
+      melodyMB: (melodyBytes / (1024 * 1024)).toFixed(1),
+      totalSavedBytes,
+      totalSavedMB: (totalSavedBytes / (1024 * 1024)).toFixed(1),
+      optimizedCount,
+      mediaCount: mediaItems.length,
+      melodyCount: melodyItems.length
+    };
+  } catch (err) {
+    console.error('Error calculating storage breakdown:', err);
+    return null;
+  }
+}
+
+/**
+ * Check if a file already exists in library to avoid duplicate storage
+ */
+export async function checkIsDuplicate(fileName, fileSize) {
+  try {
+    const cleanName = fileName.replace(/\.[^/.]+$/, '').trim().toLowerCase();
+    const existing = await db.mediaLibrary
+      .filter(item => {
+        const itemTitle = (item.title || '').trim().toLowerCase();
+        const itemSize = item.fileSize || (item.fileBlob ? item.fileBlob.size : 0);
+        return itemTitle === cleanName || (fileSize && itemSize === fileSize);
+      })
+      .first();
+    return existing || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -162,7 +263,7 @@ export async function generateSampleAudioBlob(bpm = 84, durationSeconds = 16) {
 /**
  * Helper to encode AudioBuffer to WAV Blob
  */
-function bufferToWave(abuffer, len) {
+export function bufferToWave(abuffer, len) {
   const numOfChan = abuffer.numberOfChannels;
   const length = len * numOfChan * 2 + 44;
   const out = new DataView(new ArrayBuffer(length));
